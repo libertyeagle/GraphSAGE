@@ -10,10 +10,13 @@ def sample(self, inputs_u, inputs_l, layer_infos, batch_size=None):
     support_size_l = batch_size
     support_sizes_l = [support_size_l]
     for k in range(len(layer_infos)):
+        # we must have num_samples_uu == num_samples_ul == num_samples_lu == num_samples_ll
         t = len(layer_infos) - k - 1
         # sample users-to-users
         sampler = layer_infos[t].neigh_sampler_uu
+        # node, weights = sampler((samples_u[k], layer_infos[t].num_samples_uu))
         node = sampler((samples_u[k], layer_infos[t].num_samples_uu))
+        # weights_uu = tf.reshape(node, [support_size_u * (layer_infos[t].num_samples_uu),])
         sampled_uu = tf.reshape(node, [support_size_u * (layer_infos[t].num_samples_uu),])
         # sample locations-to-users
         sampler = layer_infos[t].neigh_sampler_lu
@@ -80,11 +83,14 @@ def aggregate(self, samples_u, samples_v, input_features, dims, num_samples, sup
         for hop in range(len(num_samples) - layer):
             dim_mult = 2 if concat and (layer != 0) else 1
             neigh_dims_u = [support_sizes_u[hop], 
-                           -1, 
+                           num_samples[len(num_samples) - hop - 1], 
                            dim_mult * dims[layer]]
             neigh_dims_l = [support_sizes_l[hop], 
-                            -1, 
+                            num_samples[len(num_samples) - hop - 1], 
                            dim_mult * dims[layer]]
+            # aggregator_u(hidden_u[hop],
+            #       tf.reshape(hidden_u[hop + 1], neigh_dims),
+            #       tf.reshape(weights_u[hop + 1], (support_sizes_u[hop], num_samples[len(num_samples) - hop - 1])))
             h_u = aggregator_u((hidden_u[hop],
                     tf.reshape(hidden_u[hop + 1], neigh_dims)),
                     tf.reshape(hidden_l[hop + 1], neigh_dims))
@@ -135,13 +141,19 @@ class MeanAggregator(Layer):
         self.output_dim = output_dim
 
     def _call(self, inputs):
-        self_vecs, neigh_vecs_u, neigh_vecs_l = inputs
+        self_vecs, neigh_vecs_u, neigh_vecs_l, weights_u, weights_v = inputs
 
         # dropout
         neigh_vecs_u = tf.nn.dropout(neigh_vecs_u, 1 - self.dropout)
         neigh_vecs_l = tf.nn.dropout(neigh_vecs_l, 1 - self.dropout)
         self_vecs = tf.nn.dropout(self_vecs, 1 - self.dropout)
 
+        weights_u = tf.expand_dims(weights_u, axis=-1)
+        weights_u = tf.tile(weights_u, tf.constant([1, 1, self.input_dim], dtype=tf.int32))
+        weights_l= tf.expand_dims(weights_l, axis=-1)
+        weights_l = tf.tile(weights_l, tf.constant([1, 1, self.input_dim], dtype=tf.int32))
+        neigh_vecs_u *= weights_u
+        neigh_vecs_l *= weights_l
         neigh_means_u = tf.reduce_mean(neigh_vecs_u, axis=1)
         neigh_means_l = tf.reduce_mean(neigh_vecs_l, axis=1)
 
@@ -179,3 +191,33 @@ def _skipgram_loss(self, inputs1, inputs2, inputs3, inputs4, inputs5, inputs6, n
     neg_cost = tf.log(tf.reduce_sum(tf.exp(neg_aff), axis=1))
     loss += tf.reduce_sum(aff_1 + aff_2 - neg_cost)
     return loss
+
+
+class UniformNeighborSampler(Layer):
+    """
+    Uniformly samples neighbors.
+    Assumes that adj lists are padded with random re-sampling
+    """
+    def __init__(self, adj_info, **kwargs):
+        super(UniformNeighborSampler, self).__init__(**kwargs)
+        self.adj_info = adj_info
+
+    def _call(self, inputs):
+        # ids are node idx, num_samples is neighbours to sample for each node
+        ids, num_samples = inputs
+        # use embedding_lookup to get adj lists for nodes needed to sample
+        adj_lists = tf.nn.embedding_lookup(self.adj_info, ids) 
+        # the tensor is shuffled along dimension 0 for tf.random_shuffle
+        # so have to transpose first
+        adj_lists_reshaped = tf.expand_dims(adj_lists, -1)
+        weights_reshaped = tf.expand_dims(adj_lists, -1)
+        # (batch_size, max_degree, 2)
+        adj_weights_lists = tf.concat([adj_lists_reshaped, weights_reshaped], axis=2)
+        adj_weights_lists = tf.transpose(tf.random_shuffle(tf.transpose(adj_lists, perm=[1, 0, 2])), perm=[1, 0, 2])
+
+        adj_lists = adj_weights_list[:, :, 0]
+        weights_lists = adj_weights_list[:, :, 1]
+        adj_lists = tf.slice(adj_lists, [0,0], [-1, num_samples])
+        weights_lists = tf.slice(weights_lists, [0,0], [-1, num_samples])
+        # return a 2-D tensor
+        return adj_lists, weights_lists
