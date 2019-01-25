@@ -22,8 +22,13 @@ class UniformNeighborSampler(Layer):
         self.adj_info = adj_info
 
     def _call(self, inputs):
+        # ids are node idx, num_samples is neighbours to sample for each node
         ids, num_samples = inputs
+        # use embedding_lookup to get adj lists for nodes needed to sample
         adj_lists = tf.nn.embedding_lookup(self.adj_info, ids) 
+        # the tensor is shuffled along dimension 0 for tf.random_shuffle
+        # so have to transpose first
         adj_lists = tf.transpose(tf.random_shuffle(tf.transpose(adj_lists)))
         adj_lists = tf.slice(adj_lists, [0,0], [-1, num_samples])
+        # return a 2-D tensor
         return adj_lists

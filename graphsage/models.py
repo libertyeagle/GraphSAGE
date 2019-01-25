@@ -99,6 +99,7 @@ class MLP(Model):
     def __init__(self, placeholders, dims, categorical=True, **kwargs):
         super(MLP, self).__init__(**kwargs)
 
+        # dims is a 3 dimensional list (tuple)
         self.dims = dims
         self.input_dim = dims[0]
         self.output_dim = dims[-1]
@@ -123,6 +124,7 @@ class MLP(Model):
                     self.placeholders['labels_mask'])
         # L2
         else:
+            # fully supervised, since there is no mask
             diff = self.labels - self.outputs
             self.loss += tf.reduce_sum(tf.sqrt(tf.reduce_sum(diff * diff, axis=1)))
 
@@ -165,6 +167,10 @@ class GeneralizedModel(Model):
         with tf.variable_scope(self.name):
             self._build()
 
+        # non sequential model
+        # _build method must defines layers
+        # and create actual nodes in computation graph
+
         # Store model variables for easy access
         variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.name)
         self.vars = {var.name: var for var in variables}
@@ -202,7 +208,7 @@ class SampleAndAggregate(GeneralizedModel):
             - degrees: Numpy array with node degrees. 
             - layer_infos: List of SAGEInfo namedtuples that describe the parameters of all 
                    the recursive layers. See SAGEInfo definition above.
-            - concat: whether to concatenate during recursive iterations
+            - concat: whether to concatenate during recursive iterations, line 5 in Algorithm 1
             - aggregator_type: how to aggregate neighbor information
             - model_size: one of "small" and "big"
             - identity_dim: Set to positive int to use identity features (slow and cannot generalize, but better accuracy)
@@ -227,6 +233,7 @@ class SampleAndAggregate(GeneralizedModel):
         self.model_size = model_size
         self.adj_info = adj
         if identity_dim > 0:
+            # shape (num of nodes, identity_dim)
            self.embeds = tf.get_variable("node_embeddings", [adj.get_shape().as_list()[0], identity_dim])
         else:
            self.embeds = None
@@ -261,14 +268,20 @@ class SampleAndAggregate(GeneralizedModel):
         
         if batch_size is None:
             batch_size = self.batch_size
+        # samples is a list of 1-D tensor contains idx of nodes (B^k) for each layer
         samples = [inputs]
         # size of convolution support at each layer per node
         support_size = 1
         support_sizes = [support_size]
+        # line 2 to 7 in Algorithm 2
         for k in range(len(layer_infos)):
+            # generate samples from last layer to first layer
             t = len(layer_infos) - k - 1
+            # support_size * batch_size is total number of neighbours to sample
             support_size *= layer_infos[t].num_samples
             sampler = layer_infos[t].neigh_sampler
+            # layer_infos[t].num_samples specifies number of neighbours
+            # to sample for current layer
             node = sampler((samples[k], layer_infos[t].num_samples))
             samples.append(tf.reshape(node, [support_size * batch_size,]))
             support_sizes.append(support_size)
@@ -296,20 +309,24 @@ class SampleAndAggregate(GeneralizedModel):
             batch_size = self.batch_size
 
         # length: number of layers + 1
+        # hidden contains the list of features to be inputed to the next layer
+        # length decrease by 1 per layer (in the main for loop)
         hidden = [tf.nn.embedding_lookup(input_features, node_samples) for node_samples in samples]
         new_agg = aggregators is None
+        # aggregators is not provided, generate new aggregators
         if new_agg:
             aggregators = []
         for layer in range(len(num_samples)):
             if new_agg:
+                # do not concat inputs at first layer
                 dim_mult = 2 if concat and (layer != 0) else 1
                 # aggregator at current layer
                 if layer == len(num_samples) - 1:
-                    aggregator = self.aggregator_cls(dim_mult*dims[layer], dims[layer+1], act=lambda x : x,
+                    aggregator = self.aggregator_cls(dim_mult * dims[layer], dims[layer + 1], act=lambda x : x,
                             dropout=self.placeholders['dropout'], 
                             name=name, concat=concat, model_size=model_size)
                 else:
-                    aggregator = self.aggregator_cls(dim_mult*dims[layer], dims[layer+1],
+                    aggregator = self.aggregator_cls(dim_mult * dims[layer], dims[layer + 1],
                             dropout=self.placeholders['dropout'], 
                             name=name, concat=concat, model_size=model_size)
                 aggregators.append(aggregator)
@@ -318,11 +335,19 @@ class SampleAndAggregate(GeneralizedModel):
             # hidden representation at current layer for all support nodes that are various hops away
             next_hidden = []
             # as layer increases, the number of support nodes needed decreases
+            # B^(k-1) = B^(k-1) \union N_k(u)
+            # hence for each layer, we must aggeragate nodes sampled from this layer and above
             for hop in range(len(num_samples) - layer):
+                # samples are a list stores B^k, B^(k-1), ..., B^0 (in reverse order)
                 dim_mult = 2 if concat and (layer != 0) else 1
+                # num_samples[len(num_samples) - hop - 1]
+                # is number of neighbour samples at this hop
+                # go from B^k to B^(layer)
                 neigh_dims = [batch_size * support_sizes[hop], 
                               num_samples[len(num_samples) - hop - 1], 
-                              dim_mult*dims[layer]]
+                              dim_mult * dims[layer]]
+                # neigh_dims
+                # [number of neighbours as input, number of neighbours sampled for each node, input dims]
                 h = aggregator((hidden[hop],
                                 tf.reshape(hidden[hop + 1], neigh_dims)))
                 next_hidden.append(h)
@@ -330,9 +355,14 @@ class SampleAndAggregate(GeneralizedModel):
         return hidden[0], aggregators
 
     def _build(self):
+        # batch_size is exactly size of B in Algorithm 2
         labels = tf.reshape(
                 tf.cast(self.placeholders['batch2'], dtype=tf.int64),
                 [self.batch_size, 1])
+        # sample negative instances
+        # self.neg_samples is idx of negative samples
+        # 1-D tensor
+        # larger degree, higher prob. to be sampled
         self.neg_samples, _, _ = (tf.nn.fixed_unigram_candidate_sampler(
             true_classes=labels,
             num_true=1,
@@ -341,9 +371,10 @@ class SampleAndAggregate(GeneralizedModel):
             range_max=len(self.degrees),
             distortion=0.75,
             unigrams=self.degrees.tolist()))
-
+        # batch1, batch2, and neg_samples are all idx of nodes
            
         # perform "convolution"
+        # compute outputs for batch1, batch2, and neg_samples
         samples1, support_sizes1 = self.sample(self.inputs1, self.layer_infos)
         samples2, support_sizes2 = self.sample(self.inputs2, self.layer_infos)
         num_samples = [layer_info.num_samples for layer_info in self.layer_infos]
@@ -360,8 +391,8 @@ class SampleAndAggregate(GeneralizedModel):
                 concat=self.concat, model_size=self.model_size)
 
         dim_mult = 2 if self.concat else 1
-        self.link_pred_layer = BipartiteEdgePredLayer(dim_mult*self.dims[-1],
-                dim_mult*self.dims[-1], self.placeholders, act=tf.nn.sigmoid, 
+        self.link_pred_layer = BipartiteEdgePredLayer(dim_mult * self.dims[-1],
+                dim_mult * self.dims[-1], self.placeholders, act=tf.nn.sigmoid, 
                 bilinear_weights=False,
                 name='edge_predict')
 

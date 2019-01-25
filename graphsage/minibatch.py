@@ -74,6 +74,7 @@ class EdgeMinibatchIterator(object):
         return new_edge_list
 
     def construct_adj(self):
+        # default connects to dummy node (zero vector)
         adj = len(self.id2idx)*np.ones((len(self.id2idx)+1, self.max_degree))
         deg = np.zeros((len(self.id2idx),))
 

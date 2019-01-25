@@ -41,6 +41,7 @@ class BipartiteEdgePredLayer(Layer):
 
         # output a likelihood term
         self.output_dim = 1
+        # in our unsupervised training, no weight are required
         with tf.variable_scope(self.name + '_vars'):
             # bilinear form
             if bilinear_weights:
@@ -76,6 +77,8 @@ class BipartiteEdgePredLayer(Layer):
             self.prod = prod
             result = tf.reduce_sum(inputs1 * prod, axis=1)
         else:
+            # element-wise production
+            # 1-D tensor of shape (batch_size, )
             result = tf.reduce_sum(inputs1 * inputs2, axis=1)
         return result
 
@@ -88,6 +91,7 @@ class BipartiteEdgePredLayer(Layer):
         """
         if self.bilinear_weights:
             inputs1 = tf.matmul(inputs1, self.vars['weights'])
+        # tensor of shape (batch_size, num_neg_samples)
         neg_aff = tf.matmul(inputs1, tf.transpose(neg_samples))
         return neg_aff
 
@@ -100,7 +104,9 @@ class BipartiteEdgePredLayer(Layer):
         return self.loss_fn(inputs1, inputs2, neg_samples)
 
     def _xent_loss(self, inputs1, inputs2, neg_samples, hard_neg_samples=None):
+        # positive sampling, affinity score (1-D tensor)
         aff = self.affinity(inputs1, inputs2)
+        # negative score (2-D tensor)
         neg_aff = self.neg_cost(inputs1, neg_samples, hard_neg_samples)
         true_xent = tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.ones_like(aff), logits=aff)
@@ -112,6 +118,7 @@ class BipartiteEdgePredLayer(Layer):
     def _skipgram_loss(self, inputs1, inputs2, neg_samples, hard_neg_samples=None):
         aff = self.affinity(inputs1, inputs2)
         neg_aff = self.neg_cost(inputs1, neg_samples, hard_neg_samples)
+        # aggeragate negative cost of all negative sampels for each node in batch1
         neg_cost = tf.log(tf.reduce_sum(tf.exp(neg_aff), axis=1))
         loss = tf.reduce_sum(aff - neg_cost)
         return loss

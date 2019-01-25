@@ -19,6 +19,7 @@ class MeanAggregator(Layer):
         self.concat = concat
 
         if neigh_input_dim is None:
+            # number of features for neighbours is the same as input
             neigh_input_dim = input_dim
 
         if name is not None:
@@ -43,11 +44,16 @@ class MeanAggregator(Layer):
     def _call(self, inputs):
         self_vecs, neigh_vecs = inputs
 
-        neigh_vecs = tf.nn.dropout(neigh_vecs, 1-self.dropout)
-        self_vecs = tf.nn.dropout(self_vecs, 1-self.dropout)
+        # dropout
+        neigh_vecs = tf.nn.dropout(neigh_vecs, 1 - self.dropout)
+        self_vecs = tf.nn.dropout(self_vecs, 1 - self.dropout)
+        # mean aggerate neighbours for every node in inputs
+        # shape of neigh_means
+        # (batch_size * support_sizes[hop], dim_mult * dims[layer])
         neigh_means = tf.reduce_mean(neigh_vecs, axis=1)
        
         # [nodes] x [out_dim]
+        # (dim_mult * dims[layer], output_dim)
         from_neighs = tf.matmul(neigh_means, self.vars['neigh_weights'])
 
         from_self = tf.matmul(self_vecs, self.vars["self_weights"])
@@ -101,8 +107,11 @@ class GCNAggregator(Layer):
     def _call(self, inputs):
         self_vecs, neigh_vecs = inputs
 
-        neigh_vecs = tf.nn.dropout(neigh_vecs, 1-self.dropout)
-        self_vecs = tf.nn.dropout(self_vecs, 1-self.dropout)
+        neigh_vecs = tf.nn.dropout(neigh_vecs, 1 - self.dropout)
+        self_vecs = tf.nn.dropout(self_vecs, 1 - self.dropout)
+        # after tf.expand_dims, self_vecs becomes
+        # (batch_size * support_sizes[hop], 1, dim_mult * dims[layer])
+        # mean computation also reduces self_vecs
         means = tf.reduce_mean(tf.concat([neigh_vecs, 
             tf.expand_dims(self_vecs, axis=1)], axis=1), axis=1)
        

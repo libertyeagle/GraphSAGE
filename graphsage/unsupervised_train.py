@@ -281,8 +281,10 @@ def train(train_data, test_data=None):
 
             if iter % FLAGS.validate_iter == 0:
                 # Validation
+                # switch to validation adj
                 sess.run(val_adj_info.op)
                 val_cost, ranks, val_mrr, duration  = evaluate(sess, model, minibatch, size=FLAGS.validate_batch_size)
+                # switch back to train adj
                 sess.run(train_adj_info.op)
                 epoch_val_costs[-1] += val_cost
             if shadow_mrr is None:
